@@ -9,6 +9,13 @@
 #   msg inbox          # same as above
 #   msg all            # every message to this repo, no watermark change
 #   msg tail           # follow new arrivals across all agent logs
+#
+# Plumbing (scriptable, humans):
+#   msg cat <id|prefix>        # pretty-print one record by id (min 4 chars)
+#   msg log [alias]            # git-log style, messages involving me (or alias)
+#   msg raw [all]              # JSONL dump for `jq` / scripts
+#   msg compact                # within-file dedup; ensures id populated
+#
 #   msg help
 #
 # Alias = `basename $PWD`, overridable via `.claude-message` first line at repo root.
@@ -175,16 +182,143 @@ for line in sys.stdin:
     print(f"[{ts}] from={m['from']} thread={m['thread']}: {first}", flush=True)
 PY
       ;;
+    cat)
+      if [ $# -lt 1 ]; then echo "usage: msg cat <id|prefix>" >&2; return 2; fi
+      MSG_ID="$1" MSG_DIR="$dir" python3 - <<'PY'
+import json, os, sys, glob, hashlib
+d=os.environ["MSG_DIR"]; needle=os.environ["MSG_ID"]
+if len(needle) < 4:
+    sys.exit("id prefix must be at least 4 chars")
+def cid(m):
+    c={k:m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(c, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+hits=[]; seen=set()
+for lf in sorted(glob.glob(os.path.join(d, "log-*.jsonl"))):
+    for ln in open(lf):
+        ln=ln.strip()
+        if not ln: continue
+        try: m=json.loads(ln)
+        except: continue
+        i=m.get("id") or cid(m)
+        if i in seen: continue
+        seen.add(i)
+        if i.startswith(needle): hits.append((i, m))
+if not hits: sys.exit(f"no message with id starting with {needle!r}")
+if len(hits) > 1 and hits[0][0] != needle:
+    print("multiple matches:", file=sys.stderr)
+    for i, _ in hits[:10]:
+        print(f"  {i}", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps(hits[0][1], ensure_ascii=False, indent=2))
+PY
+      ;;
+    log)
+      local who="${1:-$me}"
+      MSG_WHO="$who" MSG_DIR="$dir" python3 - <<'PY'
+import json, os, time, glob, hashlib
+d=os.environ["MSG_DIR"]; who=os.environ["MSG_WHO"]
+def cid(m):
+    c={k:m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(c, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+seen=set(); msgs=[]
+for lf in sorted(glob.glob(os.path.join(d, "log-*.jsonl"))):
+    for ln in open(lf):
+        ln=ln.strip()
+        if not ln: continue
+        try: m=json.loads(ln)
+        except: continue
+        i=m.get("id") or cid(m)
+        if i in seen: continue
+        seen.add(i)
+        if who and who not in (m.get("from"), m.get("to")): continue
+        m["_id"]=i; msgs.append(m)
+msgs.sort(key=lambda m: m.get("ts",0), reverse=True)
+for m in msgs:
+    ts=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m.get("ts",0)))
+    print(f"id     {m['_id']}")
+    print(f"from   {m.get('from')} → {m.get('to')}")
+    print(f"ts     {ts}")
+    print(f"thread {m.get('thread')}")
+    print()
+    for line in (m.get("body") or "").splitlines() or [""]:
+        print(f"    {line}")
+    print()
+PY
+      ;;
+    raw)
+      local only_me=1
+      [ "$1" = all ] && only_me=0
+      MSG_ME="$me" MSG_ONLY_ME="$only_me" MSG_DIR="$dir" python3 - <<'PY'
+import json, os, glob, hashlib
+d=os.environ["MSG_DIR"]; me=os.environ["MSG_ME"]; only_me=os.environ["MSG_ONLY_ME"]=="1"
+def cid(m):
+    c={k:m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(c, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+seen=set()
+for lf in sorted(glob.glob(os.path.join(d, "log-*.jsonl"))):
+    for ln in open(lf):
+        ln=ln.strip()
+        if not ln: continue
+        try: m=json.loads(ln)
+        except: continue
+        i=m.get("id") or cid(m)
+        if i in seen: continue
+        seen.add(i)
+        if only_me and m.get("to")!=me: continue
+        print(json.dumps(m, ensure_ascii=False))
+PY
+      ;;
+    compact)
+      MSG_DIR="$dir" python3 - <<'PY'
+import json, os, glob, hashlib, tempfile
+d=os.environ["MSG_DIR"]
+def cid(m):
+    c={k:m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(c, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+before=0; after=0; touched=0; added_ids=0
+for lf in sorted(glob.glob(os.path.join(d, "log-*.jsonl"))):
+    orig=[ln.strip() for ln in open(lf) if ln.strip()]
+    before += len(orig)
+    seen_here=set(); keep=[]; mutated=False
+    for ln in orig:
+        try: m=json.loads(ln)
+        except: continue
+        i=m.get("id") or cid(m)
+        if i in seen_here: continue
+        seen_here.add(i)
+        if "id" not in m:
+            m={"id": i, **m}
+            mutated=True; added_ids += 1
+        keep.append(json.dumps(m, ensure_ascii=False))
+    after += len(keep)
+    if len(keep) != len(orig) or mutated:
+        touched += 1
+        tmp=tempfile.NamedTemporaryFile(mode="w", dir=d, delete=False)
+        for k in keep: tmp.write(k+"\n")
+        tmp.close()
+        os.replace(tmp.name, lf)
+extra = f", filled id on {added_ids} legacy record(s)" if added_ids else ""
+print(f"compacted: {before} → {after} records ({touched} file(s) rewritten{extra})")
+PY
+      ;;
     help|-h|--help)
       cat <<EOF
 msg — claude-message shell helper
 
+Porcelain:
   msg                      show unseen (updates watermark)
   msg inbox                alias of default
   msg all                  every message to this repo
   msg send <to> <body>     append to your per-agent log
   msg reply <body>         reply to most recent inbox message
   msg tail                 follow new arrivals (existing logs at start time)
+
+Plumbing:
+  msg cat <id|prefix>      pretty-print one record (min 4-char prefix)
+  msg log [alias]          git-log style; all messages involving me (or alias)
+  msg raw [all]            JSONL dump for jq / scripts
+  msg compact              within-file dedup; ensures id populated
+
   msg help
 
 dir:    \${CLAUDE_MESSAGE_DIR:-\$HOME/dev/.message}

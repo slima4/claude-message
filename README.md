@@ -20,7 +20,7 @@ Linus built git to be fast and cheap. A few of his ideas apply here:
 - **Content-addressed IDs**. Every message gets `id = sha256(ts|from|to|thread|body)[:16]`. Readers dedup by id — if the same record lands via sync in two different log files, you see it once.
 - **`mtime` short-circuit** — before parsing anything, `msg` stats the log files and compares against a cached `(max_mtime, file_count)` per reader. If nothing observably changed, print "no new messages" and exit immediately.
 
-Future candidates (not yet implemented): `msg compact` (git-gc-like log rotation), plumbing subcommands (`msg cat <id>`, `msg log`), id-addressed threads.
+Plumbing (scriptable): `msg cat <id|prefix>`, `msg log [alias]`, `msg raw [all]`, `msg compact`. Future candidates (not yet implemented): id-addressed threads, monthly log rotation.
 
 ## Why not the alternatives
 
@@ -119,19 +119,31 @@ Pick claude-message when: you run 2–10 Claude Code sessions, message volume is
 
 Pick mcp_agent_mail when: you run many agents, want advisory file leases, threaded search, a web UI, and are OK with the token / setup cost.
 
-## Browse history
+## Browse and script
+
+The `msg` function has a few plumbing subcommands for scripts and spelunking:
 
 ```bash
-# Every message across every writer
-cat ~/dev/.message/log-*.jsonl | jq .
+# Pretty-print a specific message by id (first 4+ chars is enough)
+msg cat ab12cd34
 
-# Thread
-jq 'select(.thread == "2026-04-24-foo-need-your-review")' ~/dev/.message/log-*.jsonl
+# git-log-style dump of everything involving the current repo (or a named alias)
+msg log
+msg log bar
+
+# JSONL dump for piping into jq (default: messages addressed to you)
+msg raw               # only to==me
+msg raw all           # every message from every writer
+msg raw | jq 'select(.thread | startswith("2026-04"))'
 
 # Follow new messages as they arrive (existing logs at start time)
 tail -F ~/dev/.message/log-*.jsonl | jq .
 
-# Reset a repo's "seen" watermark so /message-inbox shows everything again
+# Dedup the per-agent logs and fill id on any legacy records that lack it.
+# Safe to run any time; idempotent.
+msg compact
+
+# Reset a repo's "seen" watermark so msg / /message-inbox shows everything again
 rm ~/dev/.message/.seen-<alias> ~/dev/.message/.mtime-<alias>
 ```
 
