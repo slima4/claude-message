@@ -1,14 +1,22 @@
 # claude-message
 
-Dead-simple cross-session messaging for Claude Code. No server, no MCP, no token, no daemon.
+**Cheap and fast messaging between separate Claude Code agents.** No server, no MCP, no token, no daemon.
 
-One shared JSONL file on disk. Three slash commands for Claude + one shell function for humans. That's it.
+One shared JSONL message log on disk. Three slash commands for Claude + one shell function for humans. That's it.
+
+## Goal
+
+Make communication between separate Claude Code agents as **cheap** and **fast** as possible:
+
+- **Cheap for Claude**: ~1 Bash tool call per send/receive. No MCP handshake, no polling hook, no ack roundtrip. Aggressively-shrunk slash-command prompts to minimize per-invocation input tokens.
+- **Cheap for humans**: the `msg` shell function hits the message log directly. **0 Claude tokens**. The model is never in the loop.
+- **Fast**: local file append + read. No network, no server to wake up. Latency is whatever `python3` startup costs (~30ms) plus one disk write.
 
 ## Why
 
 Running multiple Claude Code sessions (one per repo) and want them to talk without manual copy-paste? Existing solutions ([mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail), Agent Teams, broker daemons) run a Python HTTP server, maintain SQLite, register agent identities, require tokens, burn tokens on polling hooks, and can reject your names for format reasons. Overkill if you just want a handful of messages a day between your own sessions.
 
-This project gives you the 90% at 1% of the cost: a local append-only JSONL file, three slash commands, basename-as-identity, no setup per repo. And the terminal path (`msg`) costs **0 Claude tokens** — humans never touch the model.
+claude-message gives you the 90% at 1% of the cost: a local append-only JSONL file, three slash commands, basename-as-identity, no setup per repo.
 
 ## Install
 
@@ -20,7 +28,7 @@ Installs:
 
 - Three slash commands into `~/.claude/commands/` for Claude Code sessions.
 - A `msg` shell function at `~/.claude-message.sh`, sourced from `~/.zshrc` / `~/.bashrc` so you can read/send from any terminal at **0 Claude tokens**.
-- The shared mailbox at `~/dev/.message/messages.jsonl`.
+- The shared message log at `~/dev/.message/messages.jsonl`.
 
 Idempotent — safe to re-run. Open a new terminal after first install so the shell function loads.
 
@@ -122,15 +130,15 @@ rm ~/dev/.message/.seen-<alias>
 ./install.sh --uninstall
 ```
 
-Removes the three slash commands, the shell helper, the mailbox file, and the `~/.zshrc` / `~/.bashrc` source block. Does not touch `.claude-message` files in your repos.
+Removes the three slash commands, the shell helper, the message log, and the `~/.zshrc` / `~/.bashrc` source block. Does not touch `.claude-message` files in your repos.
 
 ## Environment
 
-- `CLAUDE_MESSAGE_PATH` — mailbox path. Default `$HOME/dev/.message/messages.jsonl`. Honored by both the slash commands and the `msg` shell function.
+- `CLAUDE_MESSAGE_PATH` — message log path. Default `$HOME/dev/.message/messages.jsonl`. Honored by both the slash commands and the `msg` shell function.
 
 ## Limits
 
-- **No auth.** Anyone on the local machine who can read the mailbox file can read all messages. Don't put secrets here.
+- **No auth.** Anyone on the local machine who can read the message log can read all messages. Don't put secrets here.
 - **No locking.** Concurrent writers could in theory interleave lines; `echo >>` on macOS/Linux is atomic for lines under `PIPE_BUF` (4KB), so it's fine for normal messages but don't dump megabytes.
 - **No notifications.** You pull inbox with `/message-inbox` or `msg`. For a tail-on-arrival feel, run `msg tail` in a spare terminal.
 - **Single machine.** If you want this across machines, sync `~/dev/.message/` with Syncthing / Dropbox / iCloud Drive.
