@@ -2,3 +2,5 @@
 mail.jsonl
 .seen-*
 .claude-mail
+CLAUDE.md
+.claude/
