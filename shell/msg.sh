@@ -3,104 +3,169 @@
 #   [ -f "$HOME/.claude-message.sh" ] && source "$HOME/.claude-message.sh"
 #
 # Usage:
-#   msg send <to> <body...>    # append one message
+#   msg send <to> <body...>    # append to your own per-agent log
 #   msg reply <body...>        # reply to most recent inbox message
 #   msg                # unseen messages (default); updates watermark
 #   msg inbox          # same as above
 #   msg all            # every message to this repo, no watermark change
-#   msg tail           # follow new arrivals in real time
+#   msg tail           # follow new arrivals across all agent logs
 #   msg help
 #
 # Alias = `basename $PWD`, overridable via `.claude-message` first line at repo root.
-# Mailbox = $CLAUDE_MESSAGE_PATH or $HOME/dev/.message/messages.jsonl.
+# Message dir = $CLAUDE_MESSAGE_DIR or $HOME/dev/.message/. Each writer owns
+# $DIR/log-<alias>.jsonl (single-writer, no interleave). Readers union across
+# log-*.jsonl and dedup by content-addressed id.
 
 msg() {
-  local mbox="${CLAUDE_MESSAGE_PATH:-$HOME/dev/.message/messages.jsonl}"
+  local dir="${CLAUDE_MESSAGE_DIR:-$HOME/dev/.message}"
   local me=""
   if [ -s .claude-message ]; then
     IFS= read -r me < .claude-message || me=""
     me=${me%$'\r'}
   fi
   [ -z "$me" ] && me=${PWD##*/}
+  mkdir -p "$dir" 2>/dev/null
   local cmd="${1:-new}"
   shift 2>/dev/null || true
   case "$cmd" in
     send)
       if [ $# -lt 2 ]; then echo "usage: msg send <to> <body...>" >&2; return 2; fi
       local to="$1"; shift
-      MSG_ME="$me" MSG_TO="$to" MSG_BODY="$*" MSG_BOX="$mbox" python3 - <<'PY'
-import json, os, time, re, datetime
+      MSG_ME="$me" MSG_TO="$to" MSG_BODY="$*" MSG_DIR="$dir" python3 - <<'PY'
+import json, os, time, re, datetime, hashlib
 me=os.environ["MSG_ME"]; to=os.environ["MSG_TO"]
-body=os.environ["MSG_BODY"]; mbox=os.environ["MSG_BOX"]
+body=os.environ["MSG_BODY"]; d=os.environ["MSG_DIR"]
 m=re.match(r"\[thread:([^\]]+)\]\s*", body)
 if m:
     thread=m.group(1); body=body[m.end():]
 else:
     first=body.splitlines()[0] if body else ""
     slug=re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-")[:40] or "msg"
-    thread=f"{datetime.date.today().isoformat()}-{slug}"
-line=json.dumps({"ts":int(time.time()),"from":me,"to":to,"thread":thread,"body":body}, ensure_ascii=False)
-with open(mbox, "a") as f:
-    f.write(line+"\n")
-print(f"sent {me}→{to} thread={thread}")
+    thread=f"{datetime.date.today().isoformat()}-{me}-{slug}"
+ts=int(time.time())
+core={"ts":ts,"from":me,"to":to,"thread":thread,"body":body}
+mid=hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+rec={"id":mid, **core}
+log=os.path.join(d, f"log-{me}.jsonl")
+with open(log, "a") as f:
+    f.write(json.dumps(rec, ensure_ascii=False)+"\n")
+print(f"sent {me}→{to} thread={thread} id={mid}")
 PY
       ;;
     reply)
       if [ $# -lt 1 ]; then echo "usage: msg reply <body...>" >&2; return 2; fi
-      MSG_ME="$me" MSG_BODY="$*" MSG_BOX="$mbox" python3 - <<'PY'
-import json, os, sys, time
-me=os.environ["MSG_ME"]; body=os.environ["MSG_BODY"]; mbox=os.environ["MSG_BOX"]
-try:
-    lines=[json.loads(l) for l in open(mbox) if l.strip()]
-except FileNotFoundError:
-    sys.exit("no mailbox")
-mine=[m for m in lines if m.get("to")==me]
+      MSG_ME="$me" MSG_BODY="$*" MSG_DIR="$dir" python3 - <<'PY'
+import json, os, sys, time, hashlib, glob
+me=os.environ["MSG_ME"]; body=os.environ["MSG_BODY"]; d=os.environ["MSG_DIR"]
+logs=sorted(glob.glob(os.path.join(d, "log-*.jsonl")))
+mine=[]
+for lf in logs:
+    try:
+        for line in open(lf):
+            line=line.strip()
+            if not line: continue
+            try: m=json.loads(line)
+            except: continue
+            if m.get("to")==me: mine.append(m)
+    except FileNotFoundError:
+        pass
 if not mine: sys.exit("no inbox messages")
+mine.sort(key=lambda m: m.get("ts",0))
 last=mine[-1]
-reply={"ts":int(time.time()),"from":me,"to":last["from"],"thread":last["thread"],"body":body}
-with open(mbox, "a") as f:
-    f.write(json.dumps(reply, ensure_ascii=False)+"\n")
-print(f"reply {me}→{last['from']} thread={last['thread']}")
+ts=int(time.time())
+core={"ts":ts,"from":me,"to":last["from"],"thread":last["thread"],"body":body}
+mid=hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+rec={"id":mid, **core}
+out=os.path.join(d, f"log-{me}.jsonl")
+with open(out, "a") as f:
+    f.write(json.dumps(rec, ensure_ascii=False)+"\n")
+print(f"reply {me}→{last['from']} thread={last['thread']} id={mid}")
 PY
       ;;
     new|inbox|all)
       local mode=new
       [ "$cmd" = all ] && mode=all
-      MSG_ME="$me" MSG_BOX="$mbox" MSG_MODE="$mode" python3 - <<'PY'
-import json, os, time
+      MSG_ME="$me" MSG_DIR="$dir" MSG_MODE="$mode" python3 - <<'PY'
+import json, os, time, glob, hashlib
 from pathlib import Path
-me=os.environ["MSG_ME"]; mbox=Path(os.environ["MSG_BOX"]); mode=os.environ["MSG_MODE"]
-seen=mbox.parent / f".seen-{me}"
-since=0
-if mode=="new" and seen.exists():
-    try: since=int(seen.read_text().strip())
-    except: pass
-try:
-    msgs=[json.loads(l) for l in open(mbox) if l.strip()]
-except FileNotFoundError:
-    msgs=[]
-mine=[m for m in msgs if m.get("to")==me and (mode!="new" or m.get("ts",0)>since)]
-if not mine:
-    print("no new messages" if mode=="new" else "no messages"); raise SystemExit
-latest=since
-for m in mine:
+me=os.environ["MSG_ME"]; d=Path(os.environ["MSG_DIR"]); mode=os.environ["MSG_MODE"]
+log_paths=sorted(d.glob("log-*.jsonl"))
+# mtime short-circuit — skip parse entirely if nothing observable changed.
+mtime_file=d/f".mtime-{me}"
+cur_max=max((p.stat().st_mtime for p in log_paths), default=0.0)
+cur_count=len(log_paths)
+if mode=="new" and mtime_file.exists():
+    try:
+        c=json.loads(mtime_file.read_text())
+        if c.get("max_mtime",0) >= cur_max and c.get("files",0) == cur_count:
+            print("no new messages"); raise SystemExit
+    except json.JSONDecodeError:
+        pass
+seen_file=d/f".seen-{me}"
+since=0; since_ids=set()
+if mode=="new" and seen_file.exists():
+    try:
+        c=json.loads(seen_file.read_text())
+        since=c.get("ts",0); since_ids=set(c.get("ids",[]))
+    except json.JSONDecodeError:
+        pass
+def compute_id(m):
+    core={k:m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+seen_ids=set()
+msgs=[]
+for lf in log_paths:
+    for line in open(lf):
+        line=line.strip()
+        if not line: continue
+        try: m=json.loads(line)
+        except: continue
+        if m.get("to")!=me: continue
+        mid=m.get("id") or compute_id(m)
+        if mid in seen_ids: continue
+        seen_ids.add(mid)
+        t=m.get("ts",0)
+        # Watermark: strictly past, or equal-ts but not in prior-run ids-at-max-ts.
+        # Handles same-second messages (1s clock resolution) without re-showing.
+        if mode=="new" and (t<since or (t==since and mid in since_ids)): continue
+        m["_id"]=mid
+        msgs.append(m)
+msgs.sort(key=lambda m: m.get("ts",0))
+if not msgs:
+    print("no new messages" if mode=="new" else "no messages")
+    if mode=="new":
+        mtime_file.write_text(json.dumps({"max_mtime":cur_max,"files":cur_count}))
+    raise SystemExit
+for m in msgs:
     ts=time.strftime("%m-%d %H:%M", time.localtime(m.get("ts",0)))
     body=m.get("body") or ""
     first=body.splitlines()[0][:80] if body else ""
     print(f"[{ts}] from={m['from']} thread={m['thread']}: {first}")
-    latest=max(latest, m.get("ts",0))
-if mode=="new" and latest>since:
-    seen.write_text(str(latest))
+if mode=="new":
+    new_max=max(m.get("ts",0) for m in msgs)
+    # Accumulate ids at max-ts across old + new so we don't lose prior state
+    # if nothing newer arrived between runs.
+    new_ids=[m["_id"] for m in msgs if m.get("ts",0)==new_max]
+    if new_max==since:
+        new_ids=sorted(since_ids | set(new_ids))
+    seen_file.write_text(json.dumps({"ts":new_max,"ids":list(new_ids)}))
+    mtime_file.write_text(json.dumps({"max_mtime":cur_max,"files":cur_count}))
 PY
       ;;
     tail)
-      [ -f "$mbox" ] || { echo "no mailbox at $mbox" >&2; return 1; }
-      tail -n0 -f "$mbox" | MSG_ME="$me" python3 -u - <<'PY'
+      local logs=( "$dir"/log-*.jsonl )
+      if [ ! -e "${logs[0]}" ]; then
+        echo "no logs in $dir yet — nothing to follow" >&2
+        return 1
+      fi
+      tail -n0 -F "$dir"/log-*.jsonl 2>/dev/null | MSG_ME="$me" python3 -u - <<'PY'
 import json, os, sys, time
 me=os.environ["MSG_ME"]
 for line in sys.stdin:
     line=line.strip()
     if not line: continue
+    # tail -F emits "==> file <==" headers on file switch; skip them.
+    if line.startswith("==>") and line.endswith("<=="): continue
     try: m=json.loads(line)
     except json.JSONDecodeError: continue
     if m.get("to")!=me: continue
@@ -117,13 +182,14 @@ msg — claude-message shell helper
   msg                      show unseen (updates watermark)
   msg inbox                alias of default
   msg all                  every message to this repo
-  msg send <to> <body>     append message
+  msg send <to> <body>     append to your per-agent log
   msg reply <body>         reply to most recent inbox message
-  msg tail                 follow new arrivals
+  msg tail                 follow new arrivals (existing logs at start time)
   msg help
 
-mailbox: \${CLAUDE_MESSAGE_PATH:-\$HOME/dev/.message/messages.jsonl}
-alias:   \$(basename \$PWD), override via .claude-message file first line
+dir:    \${CLAUDE_MESSAGE_DIR:-\$HOME/dev/.message}
+files:  \$DIR/log-<alias>.jsonl  (single-writer, union on read)
+alias:  \$(basename \$PWD), override via .claude-message file first line
 EOF
       ;;
     *)

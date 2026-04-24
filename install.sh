@@ -4,25 +4,25 @@
 #
 # Installs three slash commands (/message-send, /message-inbox, /message-reply) for
 # Claude Code, the `msg` shell helper (0-token human path), and creates the
-# shared JSONL mailbox. Idempotent: safe to re-run.
+# shared message dir. Idempotent: safe to re-run.
 #
 # Options:
-#   --mailbox <path>    Override mailbox path (default: $HOME/dev/.message/messages.jsonl)
+#   --dir <path>        Override message dir (default: $HOME/dev/.message)
 #   --commands <dir>    Override Claude commands dir (default: $HOME/.claude/commands)
 #   --shell <path>      Override shell helper install path (default: $HOME/.claude-message.sh)
 #   --no-shell          Skip shell helper install
-#   --uninstall         Remove installed commands, shell helper, and mailbox
+#   --uninstall         Remove installed commands, shell helper, and message dir
 #   -h, --help          Show this help
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-MAILBOX_DEFAULT="$HOME/dev/.message/messages.jsonl"
+DIR_DEFAULT="$HOME/dev/.message"
 COMMANDS_DEFAULT="$HOME/.claude/commands"
 SHELL_DEFAULT="$HOME/.claude-message.sh"
 
-MAILBOX_PATH="$MAILBOX_DEFAULT"
+MSG_DIR="$DIR_DEFAULT"
 COMMANDS_DIR="$COMMANDS_DEFAULT"
 SHELL_DST="$SHELL_DEFAULT"
 INSTALL_SHELL=1
@@ -30,8 +30,8 @@ UNINSTALL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mailbox) shift; MAILBOX_PATH="${1:?}";;
-    --mailbox=*) MAILBOX_PATH="${1#*=}";;
+    --dir) shift; MSG_DIR="${1:?}";;
+    --dir=*) MSG_DIR="${1#*=}";;
     --commands) shift; COMMANDS_DIR="${1:?}";;
     --commands=*) COMMANDS_DIR="${1#*=}";;
     --shell) shift; SHELL_DST="${1:?}";;
@@ -90,24 +90,25 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   for f in "${CMDS[@]}"; do
     rm -f "$COMMANDS_DIR/$f"
   done
-  rm -f "$MAILBOX_PATH"
+  # Remove per-agent logs and internal caches, but never the dir itself blindly.
+  if [[ -d "$MSG_DIR" ]]; then
+    find "$MSG_DIR" -maxdepth 1 -type f \( -name "log-*.jsonl" -o -name ".seen-*" -o -name ".mtime-*" \) -delete 2>/dev/null || true
+    rmdir "$MSG_DIR" 2>/dev/null || true
+  fi
   rm -f "$SHELL_DST"
   for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
     strip_rc_block "$rc"
   done
-  mailbox_dir=$(dirname "$MAILBOX_PATH")
-  [[ -d "$mailbox_dir" ]] && find "$mailbox_dir" -maxdepth 1 -name ".seen-*" -delete 2>/dev/null || true
   echo "claude-message uninstalled."
   echo "  removed: ${CMDS[*]/#/$COMMANDS_DIR/}"
-  echo "  removed: $MAILBOX_PATH"
+  echo "  removed: $MSG_DIR/{log-*.jsonl,.seen-*,.mtime-*} (dir removed if empty)"
   echo "  removed: $SHELL_DST (and rc source blocks)"
   exit 0
 fi
 
 mkdir -p "$COMMANDS_DIR"
-mkdir -p "$(dirname "$MAILBOX_PATH")"
-touch "$MAILBOX_PATH"
-chmod 0644 "$MAILBOX_PATH"
+mkdir -p "$MSG_DIR"
+chmod 0755 "$MSG_DIR"
 
 for f in "${CMDS[@]}"; do
   src="$SCRIPT_DIR/commands/$f"
@@ -139,7 +140,7 @@ cat <<EOF
 claude-message installed.
 
   commands: $COMMANDS_DIR/{message-send,message-inbox,message-reply}.md
-  mailbox:  $MAILBOX_PATH$SHELL_NOTE
+  dir:      $MSG_DIR  (per-agent logs: log-<alias>.jsonl)$SHELL_NOTE
 
 Use from any Claude Code session in a repo under ~/dev/:
 

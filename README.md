@@ -2,21 +2,31 @@
 
 **Cheap and fast messaging between separate Claude Code agents.** No server, no MCP, no token, no daemon.
 
-One shared JSONL message log on disk. Three slash commands for Claude + one shell function for humans. That's it.
+One shared directory of per-agent JSONL logs. Three slash commands for Claude + one shell function for humans. That's it.
 
 ## Goal
 
 Make communication between separate Claude Code agents as **cheap** and **fast** as possible:
 
 - **Cheap for Claude**: ~1 Bash tool call per send/receive. No MCP handshake, no polling hook, no ack roundtrip. Aggressively-shrunk slash-command prompts to minimize per-invocation input tokens.
-- **Cheap for humans**: the `msg` shell function hits the message log directly. **0 Claude tokens**. The model is never in the loop.
-- **Fast**: local file append + read. No network, no server to wake up. Latency is whatever `python3` startup costs (~30ms) plus one disk write.
+- **Cheap for humans**: the `msg` shell function hits the logs directly. **0 Claude tokens**. The model is never in the loop.
+- **Fast**: local file append + read. No network, no server to wake up. `mtime` short-circuit skips parsing entirely when nothing changed. Latency is dominated by `python3` startup (~30ms).
 
-## Why
+## Design — borrowed from git
+
+Linus built git to be fast and cheap. A few of his ideas apply here:
+
+- **Per-agent append-only logs** (one file per writer: `log-<alias>.jsonl`). Single-writer per file → zero risk of interleaved lines, zero locking needed. Readers union across all `log-*.jsonl` files. This makes **distributed sync actually work** — Syncthing / Dropbox / iCloud can never produce conflicts because each writer owns its own file.
+- **Content-addressed IDs**. Every message gets `id = sha256(ts|from|to|thread|body)[:16]`. Readers dedup by id — if the same record lands via sync in two different log files, you see it once.
+- **`mtime` short-circuit** — before parsing anything, `msg` stats the log files and compares against a cached `(max_mtime, file_count)` per reader. If nothing observably changed, print "no new messages" and exit immediately.
+
+Future candidates (not yet implemented): `msg compact` (git-gc-like log rotation), plumbing subcommands (`msg cat <id>`, `msg log`), id-addressed threads.
+
+## Why not the alternatives
 
 Running multiple Claude Code sessions (one per repo) and want them to talk without manual copy-paste? Existing solutions ([mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail), Agent Teams, broker daemons) run a Python HTTP server, maintain SQLite, register agent identities, require tokens, burn tokens on polling hooks, and can reject your names for format reasons. Overkill if you just want a handful of messages a day between your own sessions.
 
-claude-message gives you the 90% at 1% of the cost: a local append-only JSONL file, three slash commands, basename-as-identity, no setup per repo.
+claude-message gives you the 90% at 1% of the cost: a shared directory of append-only JSONL files, three slash commands, basename-as-identity, no setup per repo.
 
 ## Install
 
@@ -28,14 +38,14 @@ Installs:
 
 - Three slash commands into `~/.claude/commands/` for Claude Code sessions.
 - A `msg` shell function at `~/.claude-message.sh`, sourced from `~/.zshrc` / `~/.bashrc` so you can read/send from any terminal at **0 Claude tokens**.
-- The shared message log at `~/dev/.message/messages.jsonl`.
+- The shared message dir at `~/dev/.message/`.
 
 Idempotent — safe to re-run. Open a new terminal after first install so the shell function loads.
 
 Custom paths:
 
 ```bash
-./install.sh --mailbox ~/shared/messages.jsonl --commands ~/.claude/commands --shell ~/.my-msg.sh
+./install.sh --dir ~/shared/messages --commands ~/.claude/commands --shell ~/.my-msg.sh
 ./install.sh --no-shell    # slash commands only
 ```
 
@@ -49,7 +59,7 @@ From any Claude Code session, in any repo under `~/dev/`:
 
 # In repo "bar":
 /message-inbox
-  [04-24 17:42] from=foo thread=2026-04-24-need-your-review: need your review on…
+  [04-24 17:42] from=foo thread=2026-04-24-foo-need-your-review: need your review on…
 
 /message-reply lgtm, merge when ready
 ```
@@ -59,11 +69,11 @@ From any terminal (**0 Claude tokens** — doesn't hit the model at all):
 ```
 # In repo "foo":
 $ msg send bar "need your review on the schema change"
-sent foo→bar thread=2026-04-24-need-your-review
+sent foo→bar thread=2026-04-24-foo-need-your-review id=ab12cd34ef56…
 
 # In repo "bar":
 $ msg
-[04-24 17:42] from=foo thread=2026-04-24-need-your-review: need your review on…
+[04-24 17:42] from=foo thread=2026-04-24-foo-need-your-review: need your review on…
 
 $ msg reply "lgtm, merge when ready"
 $ msg tail        # follow live in a spare pane — free push notifications
@@ -77,15 +87,15 @@ $ echo "my-short-name" > .claude-message
 
 ## How it works
 
-Messages are JSONL lines in one shared file:
+Each writer owns one file: `$DIR/log-<alias>.jsonl`. One message per line:
 
 ```json
-{"ts": 1777040863, "from": "foo", "to": "bar", "thread": "2026-04-24-need-your-review", "body": "…"}
+{"id": "ab12cd34ef56…", "ts": 1777040863, "from": "foo", "to": "bar", "thread": "2026-04-24-foo-need-your-review", "body": "…"}
 ```
 
-- `/message-send <to> <body>` (or `msg send <to> <body>`) — one `python3` + shell append
-- `/message-inbox` (or `msg`) — read file, filter `to == me`, show messages newer than `~/dev/.message/.seen-<me>` watermark
-- `/message-reply <body>` (or `msg reply <body>`) — find last message addressed to me, append reply with same `thread` and reversed `from`/`to`
+- `/message-send <to> <body>` (or `msg send <to> <body>`) — appends one line to `log-<me>.jsonl`.
+- `/message-inbox` (or `msg`) — unions `log-*.jsonl`, dedups by `id`, filters `to == me`, shows messages past the watermark (`ts` + ids-at-max-ts).
+- `/message-reply <body>` (or `msg reply <body>`) — finds the most recent message addressed to me (across all logs), appends reply to `log-<me>.jsonl`.
 
 No server. No network. No port. Works offline.
 
@@ -93,35 +103,36 @@ No server. No network. No port. Works offline.
 
 | | claude-message | mcp_agent_mail | Agent Teams |
 |---|---|---|---|
-| runtime | append-only file | HTTP server, SQLite | Claude Code built-in |
+| runtime | append-only files | HTTP server, SQLite | Claude Code built-in |
 | setup | 1 script | installer + LaunchAgent + token rotation + per-repo `.mcp.json` | opt-in env flag |
 | identity | repo basename | curated adjective+noun, strict rules | team lead/teammate |
 | cross-session | yes | yes | team only |
 | tokens per send (Claude) | ~1 Bash call | MCP init + resource reads + tool call + ack poll | similar |
 | tokens per send (shell) | **0** | n/a | n/a |
 | passive polling | none | optional hook | automatic |
-| web UI | `cat ~/dev/.message/messages.jsonl` | yes (`:8765/mail`) | none |
-| audit trail | the file itself | Git-backed markdown | per-session |
+| dedup on cross-machine sync | yes (content-addressed `id`) | n/a | n/a |
+| concurrent writers | safe (single-writer per file) | locked via server | centrally coordinated |
+| audit trail | the files themselves | Git-backed markdown | per-session |
 | cost | ~0 | high | medium |
 
-Pick claude-message when: you run 2–10 Claude Code sessions, message volume is low, you care about tokens more than features, you want to cat/grep/`tail -f` the log yourself.
+Pick claude-message when: you run 2–10 Claude Code sessions, message volume is low, you care about tokens more than features, you want to `cat`/`grep`/`tail -f` the logs yourself.
 
 Pick mcp_agent_mail when: you run many agents, want advisory file leases, threaded search, a web UI, and are OK with the token / setup cost.
 
 ## Browse history
 
 ```bash
-# All messages
-cat ~/dev/.message/messages.jsonl | jq .
+# Every message across every writer
+cat ~/dev/.message/log-*.jsonl | jq .
 
 # Thread
-jq 'select(.thread == "2026-04-24-need-your-review")' ~/dev/.message/messages.jsonl
+jq 'select(.thread == "2026-04-24-foo-need-your-review")' ~/dev/.message/log-*.jsonl
 
-# Follow new messages as they arrive
-tail -f ~/dev/.message/messages.jsonl | jq .
+# Follow new messages as they arrive (existing logs at start time)
+tail -F ~/dev/.message/log-*.jsonl | jq .
 
 # Reset a repo's "seen" watermark so /message-inbox shows everything again
-rm ~/dev/.message/.seen-<alias>
+rm ~/dev/.message/.seen-<alias> ~/dev/.message/.mtime-<alias>
 ```
 
 ## Uninstall
@@ -130,18 +141,18 @@ rm ~/dev/.message/.seen-<alias>
 ./install.sh --uninstall
 ```
 
-Removes the three slash commands, the shell helper, the message log, and the `~/.zshrc` / `~/.bashrc` source block. Does not touch `.claude-message` files in your repos.
+Removes the three slash commands, the shell helper, the per-agent logs + caches in the message dir, and the `~/.zshrc` / `~/.bashrc` source block. Does not touch `.claude-message` files in your repos.
 
 ## Environment
 
-- `CLAUDE_MESSAGE_PATH` — message log path. Default `$HOME/dev/.message/messages.jsonl`. Honored by both the slash commands and the `msg` shell function.
+- `CLAUDE_MESSAGE_DIR` — message directory. Default `$HOME/dev/.message`. Honored by both the slash commands and the `msg` shell function. Files inside: `log-<alias>.jsonl` (one per writer), `.seen-<reader>` (watermark: last-seen ts + ids-at-that-ts), `.mtime-<reader>` (mtime short-circuit cache).
 
 ## Limits
 
-- **No auth.** Anyone on the local machine who can read the message log can read all messages. Don't put secrets here.
-- **No locking.** Concurrent writers could in theory interleave lines; `echo >>` on macOS/Linux is atomic for lines under `PIPE_BUF` (4KB), so it's fine for normal messages but don't dump megabytes.
-- **No notifications.** You pull inbox with `/message-inbox` or `msg`. For a tail-on-arrival feel, run `msg tail` in a spare terminal.
-- **Single machine.** If you want this across machines, sync `~/dev/.message/` with Syncthing / Dropbox / iCloud Drive.
+- **No auth.** Anyone on the local machine who can read the message dir can read all messages. Don't put secrets here.
+- **No locking, but no interleave either.** Single-writer-per-file means two concurrent `msg send`s from the same repo could still race on the append; `echo >>` on macOS/Linux is atomic for lines under `PIPE_BUF` (4KB), so it's fine for normal messages but don't dump megabytes.
+- **No notifications.** You pull inbox with `/message-inbox` or `msg`. For a tail-on-arrival feel, run `msg tail` in a spare terminal. New writer files appearing mid-tail aren't picked up — Ctrl-C and re-run.
+- **Single machine, or sync via files.** If you want this across machines, sync `~/dev/.message/` with Syncthing / Dropbox / iCloud Drive. Per-agent logs make this conflict-free; content-addressed `id` makes it dedup-safe.
 
 ## License
 
