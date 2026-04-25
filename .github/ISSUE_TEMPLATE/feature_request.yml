@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a change
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        agent-message has one north star: **smaller, cheaper, faster** (see [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)). Features that don't serve at least one axis are typically out of scope — point those at [`mcp_agent_mail`](https://github.com/Dicklesworthstone/mcp_agent_mail).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the user-facing problem this solves?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What would change?
+    validations:
+      required: true
+  - type: checkboxes
+    id: axes
+    attributes:
+      label: Which axis does this serve?
+      description: At least one MUST be checked.
+      options:
+        - label: "**Smaller** — reduces lines, tokens, or surface"
+        - label: "**Cheaper** — reduces shell calls, tokens, or runtime deps"
+        - label: "**Faster** — reduces wall-clock latency"
+  - type: textarea
+    id: tradeoff
+    attributes:
+      label: Tradeoff
+      description: If you check more than one axis, name what you trade. e.g. "smaller slash commands, but +50 lines in the wrapper."
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Why not solve it with existing primitives (msg plumbing, shell pipes, jq)?

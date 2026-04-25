@@ -1,0 +1,19 @@
+name: Question
+description: Usage / setup help
+title: "[question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [`docs/`](https://slima4.github.io/agent-message/) first. If the answer isn't there, ask here so others find it later.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What did you already try?

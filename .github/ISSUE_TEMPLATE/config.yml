@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://slima4.github.io/agent-message/
+    about: Install, use, design, SAMP spec, limits.
+  - name: SAMP Spec (Simple Agent Message Protocol)
+    url: https://github.com/slima4/agent-message/blob/main/SPEC.md
+    about: Protocol definition for implementers.
+  - name: Looking for richer features?
+    url: https://github.com/Dicklesworthstone/mcp_agent_mail
+    about: mcp_agent_mail offers threading UI, file leases, search — at the cost of an HTTP server and tokens per send.

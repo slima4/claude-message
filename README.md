@@ -197,6 +197,10 @@ Removes the three slash commands, the wrapper at `~/.agent-message-cmd`, the she
 
 Live: <https://slima4.github.io/agent-message/>. Sources in [`docs/`](docs/) — install, use, design, [SAMP spec](SPEC.md), limits. Build locally with `pip install -r requirements-docs.txt && mkdocs serve`.
 
+## Contributing
+
+PRs welcome — read [`CONTRIBUTING.md`](CONTRIBUTING.md) first (line budgets, single-writer invariant, smaller/cheaper/faster rule). For non-trivial work, [open an issue](https://github.com/slima4/agent-message/issues/new/choose) first. See also [`SECURITY.md`](SECURITY.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
 ## License
 
 MIT — see `LICENSE`.
