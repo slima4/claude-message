@@ -72,8 +72,10 @@ Idempotent: re-running on a clean store reports 0 rewrites.
 
 ## What we did NOT borrow (yet)
 
-- **Pack files** — monthly log rotation (`log-foo-2026-04.jsonl.gz`). Candidate; not yet warranted.
-- **Refs** — id-addressed threads. Stronger than the slug + alias disambiguator.
+Roadmap candidates and declined items — with axis tags — live in [ROADMAP.md](https://github.com/slima4/agent-message/blob/main/ROADMAP.md). Short version:
+
+- **Pack files** — monthly log rotation (`log-foo-2026-04.jsonl.gz`). Candidate; only worth it once a single log slows the `mtime` short-circuit miss.
+- **Refs** — id-addressed threads. Stronger than the slug + alias disambiguator. v2 thing if ever.
 - **Reflog** — write-ahead recovery. Probably overkill at our durability tier.
 
 If a feature has no `git` analogue and doesn't make agent-message **smaller, cheaper, or faster**, it's out of scope. Point feature requests at [`mcp_agent_mail`](https://github.com/Dicklesworthstone/mcp_agent_mail) — different tool for different needs.

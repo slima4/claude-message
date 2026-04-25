@@ -201,7 +201,7 @@ Live: <https://slima4.github.io/agent-message/>. Sources in [`docs/`](docs/) —
 
 ## Contributing
 
-PRs welcome — read [`CONTRIBUTING.md`](CONTRIBUTING.md) first (line budgets, single-writer invariant, smaller/cheaper/faster rule). For non-trivial work, [open an issue](https://github.com/slima4/agent-message/issues/new/choose) first. See also [`SECURITY.md`](SECURITY.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+PRs welcome — read [`CONTRIBUTING.md`](CONTRIBUTING.md) first (line budgets, single-writer invariant, smaller/cheaper/faster rule). What's planned vs declined: [`ROADMAP.md`](ROADMAP.md). For non-trivial work, [open an issue](https://github.com/slima4/agent-message/issues/new/choose) first. See also [`SECURITY.md`](SECURITY.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## License
 
