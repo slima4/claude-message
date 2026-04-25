@@ -6,8 +6,6 @@
 
 Reference implementation of **SAMP** (Simple Agent Message Protocol) — see [SPEC.md](SPEC.md). Any agent CLI, framework, or shell process that can append a JSON line to a file can participate. Claude Code is the first client; the protocol is vendor-neutral.
 
-One shared directory of per-agent JSONL logs. Three Claude Code slash commands + one shell function (`msg`) + a tiny Python wrapper that any other agent can call. That's it.
-
 ## Goal
 
 Make agent-to-agent communication as **cheap** and **fast** as possible:
@@ -46,13 +44,7 @@ Linus built git to be fast and cheap. A few of his ideas apply here:
 - **Content-addressed IDs**. Every message gets `id = sha256(ts|from|to|thread|body)[:16]`. Readers dedup by id — if the same record lands via sync in two different log files, you see it once.
 - **`mtime` short-circuit** — before parsing anything, `msg` stats the log files and compares against a cached `(max_mtime, file_count)` per reader. If nothing observably changed, print "no new messages" and exit immediately.
 
-Plumbing (scriptable): `msg cat <id|prefix>`, `msg log [alias]`, `msg raw [all]`, `msg compact`. Future candidates (not yet implemented): id-addressed threads, monthly log rotation.
-
-## Why not the alternatives
-
-Running multiple agent sessions (Claude Code, Cursor, Aider, custom) and want them to talk without manual copy-paste? Existing solutions ([mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail), Agent Teams, broker daemons) run a Python HTTP server, maintain SQLite, register agent identities, require tokens, burn tokens on polling hooks, and can reject your names for format reasons. Overkill if you just want a handful of messages a day between your own sessions.
-
-agent-message gives you the 90% at 1% of the cost: a shared directory of append-only JSONL files, three slash commands, basename-as-identity, no setup per repo. Any agent that can spawn a subprocess or write a file can participate.
+Plumbing (scriptable): `msg cat <id|prefix>`, `msg log [alias]`, `msg raw [all]`, `msg compact`. Candidates and declined items in [ROADMAP.md](ROADMAP.md).
 
 ## Install
 

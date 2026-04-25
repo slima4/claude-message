@@ -44,7 +44,7 @@ import json, os, time, re, datetime, hashlib
 from pathlib import Path
 me=os.environ["MSG_ME"]; to=os.environ["MSG_TO"]
 body=os.environ["MSG_BODY"]; d=Path(os.environ["MSG_DIR"])
-m=re.match(r"\[thread:([^\]]+)\]\s*", body)
+m=re.match(r"\s*\[thread:([^\]]+)\]\s*", body)
 if m:
     thread=m.group(1); body=body[m.end():]
 else:
