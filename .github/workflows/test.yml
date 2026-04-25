@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bin/**"
+      - "shell/**"
+      - "commands/**"
+      - "install.sh"
+      - "test.sh"
+      - ".github/workflows/test.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: ./test.sh

@@ -21,11 +21,9 @@ If you check more than one, name the tradeoff. If you check "Other", explain why
 
 ## Tested
 
-- [ ] Shell round-trip (`msg send` → `msg` → `msg reply` → `msg`)
-- [ ] Same-second burst (two sends in the same second both visible)
-- [ ] Dedup (copy of a log behaves as one record)
-- [ ] Claude round-trip (`/message-send` / `/message-inbox` / `/message-reply`)
-- [ ] Installer (`./install.sh` × 2, then `./install.sh --uninstall`)
+- [ ] `./test.sh` passes locally (CI runs it on Linux + macOS)
+- [ ] Added a new test for any new behaviour
+- [ ] Manual Claude-Code round-trip (only required for `commands/*.md` edits)
 - [ ] Re-ran `./install.sh` after editing `commands/*.md`, `shell/msg.sh`, or `bin/agent-message-cmd`
 - [ ] Schema / contract changes landed in BOTH `bin/agent-message-cmd` AND `shell/msg.sh` (n/a if no contract change)
 

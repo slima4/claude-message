@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# agent-message test runner. Pure bash + python3, no other deps.
+# Run: ./test.sh
+set -u
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WRAPPER="$SCRIPT_DIR/bin/agent-message-cmd"
+SHELL_HELPER="$SCRIPT_DIR/shell/msg.sh"
+
+PASS=0
+FAIL=0
+FAILED=()
+
+setup() {
+  TMP=$(mktemp -d)
+  export AGENT_MESSAGE_DIR="$TMP/.message"
+  mkdir -p "$TMP/foo" "$TMP/bar"
+}
+
+teardown() {
+  [[ -n "${TMP:-}" ]] && rm -rf "$TMP"
+  unset TMP
+}
+
+assert_eq() {
+  [[ "$1" == "$2" ]] && return 0
+  echo "  ASSERT_EQ failed ($3): expected=[$1] actual=[$2]"
+  return 1
+}
+
+assert_contains() {
+  [[ "$1" == *"$2"* ]] && return 0
+  echo "  ASSERT_CONTAINS failed ($3): needle=[$2]"
+  echo "  haystack:"; echo "$1" | sed 's/^/    /'
+  return 1
+}
+
+assert_file_exists() {
+  [[ -f "$1" ]] && return 0
+  echo "  ASSERT_FILE_EXISTS failed: $1 missing"
+  return 1
+}
+
+assert_file_missing() {
+  [[ ! -e "$1" ]] && return 0
+  echo "  ASSERT_FILE_MISSING failed: $1 exists"
+  return 1
+}
+
+run_test() {
+  setup
+  if "$1"; then
+    echo "PASS: $1"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL: $1"
+    FAIL=$((FAIL+1))
+    FAILED+=("$1")
+  fi
+  teardown
+}
+
+# ---- wrapper tests ----
+
+test_wrapper_round_trip() {
+  ( cd "$TMP/foo" && echo "hi from foo" | "$WRAPPER" send bar ) >/dev/null
+  local out; out=$( cd "$TMP/bar" && "$WRAPPER" inbox )
+  assert_contains "$out" "from=foo" "inbox sees foo" || return 1
+  assert_contains "$out" "hi from foo" "inbox shows body" || return 1
+  ( cd "$TMP/bar" && echo "lgtm" | "$WRAPPER" reply ) >/dev/null
+  out=$( cd "$TMP/foo" && "$WRAPPER" inbox )
+  assert_contains "$out" "lgtm" "foo sees reply"
+}
+
+test_wrapper_watermark() {
+  ( cd "$TMP/foo" && echo "msg1" | "$WRAPPER" send bar ) >/dev/null
+  ( cd "$TMP/bar" && "$WRAPPER" inbox ) >/dev/null
+  local out; out=$( cd "$TMP/bar" && "$WRAPPER" inbox )
+  assert_contains "$out" "no new messages" "watermark suppresses re-show"
+}
+
+test_wrapper_same_second_burst() {
+  ( cd "$TMP/foo" && echo "first" | "$WRAPPER" send bar ) >/dev/null
+  ( cd "$TMP/foo" && echo "second" | "$WRAPPER" send bar ) >/dev/null
+  local out; out=$( cd "$TMP/bar" && "$WRAPPER" inbox )
+  assert_contains "$out" "first" "burst: first visible" || return 1
+  assert_contains "$out" "second" "burst: second visible"
+}
+
+test_wrapper_dedup_synced_log() {
+  ( cd "$TMP/foo" && echo "ping" | "$WRAPPER" send bar ) >/dev/null
+  cp "$AGENT_MESSAGE_DIR/log-foo.jsonl" "$AGENT_MESSAGE_DIR/log-foo-replica.jsonl"
+  local out; out=$( cd "$TMP/bar" && "$WRAPPER" inbox )
+  local n; n=$(echo "$out" | grep -c "from=foo" || true)
+  assert_eq "1" "$n" "synced duplicate dedups to 1"
+}
+
+test_wrapper_alias_traversal_blocked() {
+  ( cd "$TMP/foo"
+    echo "../../../tmp/PWNED-$$" > .agent-message
+    echo "evil" | "$WRAPPER" send bar ) >/dev/null
+  assert_file_exists "$AGENT_MESSAGE_DIR/log-foo.jsonl" || return 1
+  assert_file_missing "/tmp/PWNED-$$" || return 1
+  assert_file_missing "/tmp/PWNED-$$.jsonl"
+}
+
+test_wrapper_thread_inheritance() {
+  ( cd "$TMP/foo" && echo "first" | "$WRAPPER" send bar ) >/dev/null
+  ( cd "$TMP/bar" && echo "second" | "$WRAPPER" reply ) >/dev/null
+  local sent_thread reply_thread
+  sent_thread=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["thread"])' \
+                "$AGENT_MESSAGE_DIR/log-foo.jsonl")
+  reply_thread=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["thread"])' \
+                 "$AGENT_MESSAGE_DIR/log-bar.jsonl")
+  assert_eq "$sent_thread" "$reply_thread" "reply inherits thread"
+}
+
+test_wrapper_thread_override() {
+  ( cd "$TMP/foo" && printf '[thread:custom-id]\nbody' | "$WRAPPER" send bar ) >/dev/null
+  local thread
+  thread=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["thread"])' \
+           "$AGENT_MESSAGE_DIR/log-foo.jsonl")
+  assert_eq "custom-id" "$thread" "[thread:id] prefix override"
+}
+
+test_wrapper_id_is_content_addressed() {
+  ( cd "$TMP/foo" && echo "same body" | "$WRAPPER" send bar ) >/dev/null
+  local id1; id1=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["id"])' \
+                   "$AGENT_MESSAGE_DIR/log-foo.jsonl")
+  # Reset and resend with identical content (and identical ts via mocked time? no — ts differs)
+  # Instead, verify id is 16 hex chars and reproducible from canonical content.
+  [[ "${#id1}" -eq 16 ]] || { echo "  id length wrong: $id1"; return 1; }
+  python3 - "$AGENT_MESSAGE_DIR/log-foo.jsonl" <<'PY' || return 1
+import hashlib, json, sys
+rec = json.loads(open(sys.argv[1]).readline())
+core = {k: rec[k] for k in ("ts","from","to","thread","body")}
+expected = hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+assert rec["id"] == expected, f'id mismatch: {rec["id"]} vs {expected}'
+PY
+}
+
+# ---- shell helper tests ----
+
+test_msg_round_trip() {
+  ( source "$SHELL_HELPER"; cd "$TMP/foo" && msg send bar "hi from msg" ) >/dev/null
+  local out
+  out=$( source "$SHELL_HELPER"; cd "$TMP/bar" && msg )
+  assert_contains "$out" "hi from msg" "msg shows message"
+}
+
+test_msg_mtime_short_circuit() {
+  ( source "$SHELL_HELPER"; cd "$TMP/foo" && msg send bar "ping" ) >/dev/null
+  ( source "$SHELL_HELPER"; cd "$TMP/bar" && msg ) >/dev/null
+  local out
+  out=$( source "$SHELL_HELPER"; cd "$TMP/bar" && msg )
+  assert_contains "$out" "no new messages" "mtime short-circuit"
+}
+
+# ---- installer tests ----
+
+test_installer_idempotent_and_uninstall() {
+  local fake_home="$TMP/fake-home"
+  mkdir -p "$fake_home"
+  local args=(
+    --dir "$fake_home/dev/.message"
+    --commands "$fake_home/.claude/commands"
+    --shell "$fake_home/.agent-message.sh"
+    --bin "$fake_home/.agent-message-cmd"
+    --no-shell
+  )
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
+  assert_file_exists "$fake_home/.agent-message-cmd" || return 1
+  assert_file_exists "$fake_home/.claude/commands/message-send.md" || return 1
+  # Re-run — must not fail
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" --uninstall >/dev/null 2>&1 || return 1
+  assert_file_missing "$fake_home/.agent-message-cmd" || return 1
+  assert_file_missing "$fake_home/.claude/commands/message-send.md"
+}
+
+# ---- run ----
+
+TESTS=(
+  test_wrapper_round_trip
+  test_wrapper_watermark
+  test_wrapper_same_second_burst
+  test_wrapper_dedup_synced_log
+  test_wrapper_alias_traversal_blocked
+  test_wrapper_thread_inheritance
+  test_wrapper_thread_override
+  test_wrapper_id_is_content_addressed
+  test_msg_round_trip
+  test_msg_mtime_short_circuit
+  test_installer_idempotent_and_uninstall
+)
+
+echo "running ${#TESTS[@]} tests"
+echo
+for t in "${TESTS[@]}"; do
+  run_test "$t"
+done
+
+echo
+echo "$PASS passed, $FAIL failed"
+if [[ "$FAIL" -gt 0 ]]; then
+  echo "failed:"
+  for n in "${FAILED[@]}"; do echo "  - $n"; done
+  exit 1
+fi

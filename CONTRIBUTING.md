@@ -36,27 +36,28 @@ Features that don't serve any of the three axes are out of scope. Point those at
 
 ## Testing
 
-There is no build step, no linter, no test framework. Verification is a small set of round-trips:
-
 ```bash
-# Shell round-trip (fast, run during dev)
-TMP=$(mktemp -d); export AGENT_MESSAGE_DIR="$TMP/.message"
-source shell/msg.sh
-mkdir -p "$TMP/foo" "$TMP/bar"
-(cd "$TMP/foo" && msg send bar "hi")
-(cd "$TMP/bar" && msg)             # sees hi
-(cd "$TMP/bar" && msg)             # "no new messages" (mtime short-circuit)
-(cd "$TMP/bar" && msg reply "lgtm")
-(cd "$TMP/foo" && msg)             # sees lgtm
-rm -rf "$TMP"
+./test.sh
 ```
 
-Cases to also check before submitting:
+11 round-trip tests covering wrapper, shell helper, installer. Pure bash + python3, no other deps. CI runs the same script on Linux + macOS.
 
-- **Same-second burst** — two sends in the same second must both be visible to the recipient's first `msg` call.
-- **Dedup** — copy `log-foo.jsonl` to `log-foo-replica.jsonl` (simulating sync duplicate), reset `.seen-*` + `.mtime-*`, run `msg` — duplicate must appear exactly once.
-- **Claude round-trip** — in two Claude Code sessions: `/message-send <other> hi` → `/message-inbox` → `/message-reply lgtm` → `/message-inbox` on the first side.
-- **Installer** — `./install.sh && ./install.sh && ./install.sh --uninstall` must all succeed cleanly. Double-install must not duplicate the rc-block. Uninstall must strip it.
+Cases the suite covers — and that you should mentally check when adding a feature:
+
+- **Round-trip** — send → inbox → reply → inbox.
+- **Watermark** — second `inbox` returns "no new messages".
+- **Same-second burst** — two sends in the same second both visible to the first `inbox`.
+- **Dedup** — sync-duplicated log appears exactly once.
+- **Path traversal blocked** — `.agent-message` containing `../../tmp/PWNED` falls back to cwd basename, doesn't write outside the message dir.
+- **Thread inheritance** — reply uses the same thread as the message it replies to.
+- **`[thread:<id>]` override** — explicit prefix wins.
+- **Content-addressed `id`** — 16 hex chars, matches `sha256(canonical_json({ts,from,to,thread,body}))[:16]`.
+- **mtime short-circuit** — second `msg` call exits without parsing.
+- **Installer idempotence + uninstall** — `install.sh × 2 + --uninstall` cleans up.
+
+Add a new test for any new feature. Prefer end-to-end (call the binary) over unit tests of internals — internals get refactored, contracts don't.
+
+The Claude-Code round-trip (`/message-send` etc.) is not yet automated. Run it manually for changes that touch `commands/*.md`.
 
 ## Style
 
