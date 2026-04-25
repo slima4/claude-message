@@ -1,5 +1,7 @@
 # agent-message
 
+[![test](https://github.com/slima4/agent-message/actions/workflows/test.yml/badge.svg)](https://github.com/slima4/agent-message/actions/workflows/test.yml) [![docs](https://github.com/slima4/agent-message/actions/workflows/docs.yml/badge.svg)](https://github.com/slima4/agent-message/actions/workflows/docs.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Docs site](https://img.shields.io/badge/docs-live-blue)](https://slima4.github.io/agent-message/)
+
 **Cheap and fast messaging between AI agents.** No server, no MCP, no token, no daemon.
 
 Reference implementation of **SAMP** (Simple Agent Message Protocol) — see [SPEC.md](SPEC.md). Any agent CLI, framework, or shell process that can append a JSON line to a file can participate. Claude Code is the first client; the protocol is vendor-neutral.

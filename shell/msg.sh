@@ -1,4 +1,5 @@
-# agent-message shell helper — 0 Claude tokens, human-side only.
+# shellcheck shell=bash
+# agent-message shell helper -- 0 LLM tokens, human-side only.
 # Source from ~/.zshrc or ~/.bashrc:
 #   [ -f "$HOME/.agent-message.sh" ] && source "$HOME/.agent-message.sh"
 #
@@ -160,10 +161,11 @@ PY
     tail)
       local logs=( "$dir"/log-*.jsonl )
       if [ ! -e "${logs[0]}" ]; then
-        echo "no logs in $dir yet — nothing to follow" >&2
+        echo "no logs in $dir yet -- nothing to follow" >&2
         return 1
       fi
-      tail -n0 -F "$dir"/log-*.jsonl 2>/dev/null | MSG_ME="$me" python3 -u - <<'PY'
+      # python3 -c keeps stdin free for the pipe from tail (heredoc would shadow it).
+      tail -n0 -F "$dir"/log-*.jsonl 2>/dev/null | MSG_ME="$me" python3 -u -c '
 import json, os, sys, time
 me=os.environ["MSG_ME"]
 for line in sys.stdin:
@@ -177,8 +179,8 @@ for line in sys.stdin:
     ts=time.strftime("%m-%d %H:%M", time.localtime(m.get("ts",0)))
     body=m.get("body") or ""
     first=body.splitlines()[0][:80] if body else ""
-    print(f"[{ts}] from={m['from']} thread={m['thread']}: {first}", flush=True)
-PY
+    print(f"[{ts}] from={m[\"from\"]} thread={m[\"thread\"]}: {first}", flush=True)
+'
       ;;
     cat)
       if [ $# -lt 1 ]; then echo "usage: msg cat <id|prefix>" >&2; return 2; fi

@@ -96,7 +96,7 @@ test_wrapper_dedup_synced_log() {
 }
 
 test_wrapper_alias_traversal_blocked() {
-  ( cd "$TMP/foo"
+  ( cd "$TMP/foo" || exit 1
     echo "../../../tmp/PWNED-$$" > .agent-message
     echo "evil" | "$WRAPPER" send bar ) >/dev/null
   assert_file_exists "$AGENT_MESSAGE_DIR/log-foo.jsonl" || return 1
@@ -140,18 +140,23 @@ PY
 }
 
 # ---- shell helper tests ----
-
+# shellcheck source=shell/msg.sh
 test_msg_round_trip() {
+  # shellcheck source=shell/msg.sh
   ( source "$SHELL_HELPER"; cd "$TMP/foo" && msg send bar "hi from msg" ) >/dev/null
   local out
+  # shellcheck source=shell/msg.sh
   out=$( source "$SHELL_HELPER"; cd "$TMP/bar" && msg )
   assert_contains "$out" "hi from msg" "msg shows message"
 }
 
 test_msg_mtime_short_circuit() {
+  # shellcheck source=shell/msg.sh
   ( source "$SHELL_HELPER"; cd "$TMP/foo" && msg send bar "ping" ) >/dev/null
+  # shellcheck source=shell/msg.sh
   ( source "$SHELL_HELPER"; cd "$TMP/bar" && msg ) >/dev/null
   local out
+  # shellcheck source=shell/msg.sh
   out=$( source "$SHELL_HELPER"; cd "$TMP/bar" && msg )
   assert_contains "$out" "no new messages" "mtime short-circuit"
 }
@@ -171,11 +176,43 @@ test_installer_idempotent_and_uninstall() {
   HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
   assert_file_exists "$fake_home/.agent-message-cmd" || return 1
   assert_file_exists "$fake_home/.claude/commands/message-send.md" || return 1
-  # Re-run — must not fail
+  # Re-run -- must not fail
   HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
   HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" --uninstall >/dev/null 2>&1 || return 1
   assert_file_missing "$fake_home/.agent-message-cmd" || return 1
   assert_file_missing "$fake_home/.claude/commands/message-send.md"
+}
+
+test_installer_rc_block_idempotent_and_stripped() {
+  local fake_home="$TMP/rc-home"
+  mkdir -p "$fake_home"
+  printf '# user content above\nexport FOO=bar\n' > "$fake_home/.zshrc"
+  printf '# user content above\nexport FOO=bar\n' > "$fake_home/.bashrc"
+  local args=(
+    --dir "$fake_home/dev/.message"
+    --commands "$fake_home/.claude/commands"
+    --shell "$fake_home/.agent-message.sh"
+    --bin "$fake_home/.agent-message-cmd"
+  )
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
+  local n
+  n=$(grep -c "^# >>> agent-message >>>$" "$fake_home/.zshrc" || true)
+  assert_eq "1" "$n" "rc-block injected once into .zshrc" || return 1
+  n=$(grep -c "^# >>> agent-message >>>$" "$fake_home/.bashrc" || true)
+  assert_eq "1" "$n" "rc-block injected once into .bashrc" || return 1
+  # Re-run install -- must not duplicate
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" >/dev/null 2>&1 || return 1
+  n=$(grep -c "^# >>> agent-message >>>$" "$fake_home/.zshrc" || true)
+  assert_eq "1" "$n" "rc-block still once after re-install" || return 1
+  # Uninstall -- rc-block must be stripped, user content preserved
+  HOME="$fake_home" "$SCRIPT_DIR/install.sh" "${args[@]}" --uninstall >/dev/null 2>&1 || return 1
+  n=$(grep -c "agent-message" "$fake_home/.zshrc" || true)
+  assert_eq "0" "$n" "rc-block stripped from .zshrc" || return 1
+  n=$(grep -c "agent-message" "$fake_home/.bashrc" || true)
+  assert_eq "0" "$n" "rc-block stripped from .bashrc" || return 1
+  local zshrc; zshrc=$(cat "$fake_home/.zshrc")
+  assert_contains "$zshrc" "user content above" "user content preserved in .zshrc" || return 1
+  assert_contains "$zshrc" "FOO=bar" "user export preserved in .zshrc"
 }
 
 # ---- run ----
@@ -192,6 +229,7 @@ TESTS=(
   test_msg_round_trip
   test_msg_mtime_short_circuit
   test_installer_idempotent_and_uninstall
+  test_installer_rc_block_idempotent_and_stripped
 )
 
 echo "running ${#TESTS[@]} tests"

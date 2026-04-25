@@ -9,3 +9,4 @@ site/
 # venv used to build docs locally
 .venv/
 __pycache__/
+blog-post.md
