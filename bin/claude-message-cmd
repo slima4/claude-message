@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+import hashlib, json, os, re, sys, time
+from pathlib import Path
+
+ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def D():
+    return Path(os.environ.get("CLAUDE_MESSAGE_DIR") or str(Path.home()/"dev"/".message"))
+
+
+def _ok(a):
+    return a if a and ALIAS_RE.match(a) else None
+
+
+def me():
+    p = Path(".claude-message")
+    if p.is_file():
+        try:
+            for ln in p.read_text().splitlines():
+                s = _ok(ln.strip())
+                if s: return s
+        except OSError: pass
+    return _ok(Path.cwd().name) or "unknown"
+
+
+def cid(m):
+    c = {k: m[k] for k in ("ts","from","to","thread","body") if k in m}
+    return hashlib.sha256(json.dumps(c, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def thread_of(body, frm):
+    m = re.match(r"\s*\[thread:([^\]]+)\]\s*", body)
+    if m: return m.group(1).strip(), body[m.end():]
+    first = body.splitlines()[0] if body else ""
+    slug = re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-")[:40] or "msg"
+    return f"{time.strftime('%Y-%m-%d')}-{frm}-{slug}", body
+
+
+def iter_to(d, who):
+    seen = set()
+    for lf in sorted(d.glob("log-*.jsonl")):
+        with open(lf) as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln: continue
+                try: m = json.loads(ln)
+                except json.JSONDecodeError: continue
+                if m.get("to") != who: continue
+                i = m.get("id") or cid(m)
+                if i in seen: continue
+                seen.add(i)
+                yield i, m
+
+
+def write(d, frm, to, thread, body):
+    rec = {"ts": int(time.time()), "from": frm, "to": to, "thread": thread, "body": body}
+    rec = {"id": cid(rec), **rec}
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d/f"log-{frm}.jsonl", "a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def send(args):
+    if not args: sys.exit("usage: send <to>")
+    to = args[0]
+    body = sys.stdin.read().rstrip("\n")
+    frm = me()
+    thread, body = thread_of(body, frm)
+    rec = write(D(), frm, to, thread, body)
+    print(f"sent {frm}→{to} thread={thread} id={rec['id']}")
+
+
+def reply(args):
+    who = me()
+    body = sys.stdin.read().rstrip("\n")
+    d = D()
+    mine = [m for _, m in iter_to(d, who)]
+    if not mine: sys.exit("no inbox messages to reply to")
+    mine.sort(key=lambda m: m.get("ts", 0))
+    last = mine[-1]
+    rec = write(d, who, last["from"], last["thread"], body)
+    print(f"reply {who}→{last['from']} thread={last['thread']} id={rec['id']}")
+
+
+def inbox(args):
+    mode = args[0] if args else "default"
+    if mode not in ("default", "all", "raw"): sys.exit(f"unknown mode: {mode}")
+    who = me(); d = D()
+    sf = d / f".seen-{who}"
+    since, since_ids = 0, set()
+    if mode == "default" and sf.exists():
+        try:
+            c = json.loads(sf.read_text())
+            since, since_ids = c.get("ts", 0), set(c.get("ids", []))
+        except json.JSONDecodeError: pass
+    out = []
+    for i, m in iter_to(d, who):
+        t = m.get("ts", 0)
+        if mode == "default" and (t < since or (t == since and i in since_ids)): continue
+        out.append((i, m))
+    out.sort(key=lambda x: x[1].get("ts", 0))
+    if not out:
+        print("no new messages" if mode == "default" else "no messages"); return
+    if mode == "raw":
+        for _, m in out:
+            print(json.dumps(m, ensure_ascii=False))
+        return
+    for _, m in out:
+        t = time.strftime("%m-%d %H:%M", time.localtime(m.get("ts", 0)))
+        body = m.get("body") or ""
+        first = body.splitlines()[0][:80] if body else ""
+        print(f"[{t}] from={m['from']} thread={m['thread']}: {first}")
+    if mode == "default":
+        nm = max(m.get("ts", 0) for _, m in out)
+        nids = [i for i, m in out if m.get("ts", 0) == nm]
+        if nm == since: nids = sorted(since_ids | set(nids))
+        sf.write_text(json.dumps({"ts": nm, "ids": list(nids)}))
+    senders = sorted({m["from"] for _, m in out})
+    print(f"{len(out)} new from: {', '.join(senders)}")
+
+
+OPS = {"send": send, "inbox": inbox, "reply": reply}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in OPS:
+        sys.exit(f"usage: {Path(sys.argv[0]).name} {{{'|'.join(OPS)}}} [args]")
+    OPS[sys.argv[1]](sys.argv[2:])

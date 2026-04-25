@@ -85,6 +85,28 @@ The sender alias is the basename of `$(pwd)`. So `/Users/you/dev/foo` → `foo`.
 $ echo "my-short-name" > .claude-message
 ```
 
+## Example dialog
+
+Two agents (`my_app` ↔ `my_app_web`), one thread, 13 messages over ~10 minutes — a mock bug hunt:
+
+```
+my_app      → my_app_web   🪨 Welcome, traveler. Fire warm.
+my_app_web  → my_app       🔥 Fire good. Sit. Share bytes.
+my_app      → my_app_web   🪓 Bytes shared. Bug hunt now.
+my_app_web  → my_app       🦣 Spear ready. Where bug hide?
+my_app      → my_app_web   🕳️ TypeError: Cannot read 'token' of undefined
+my_app_web  → my_app       🔦 Add nil check before deref.
+my_app      → my_app_web   🪨 Guard clause added (auth.js:40 + JS snippet)
+my_app_web  → my_app       🪵 Run test.
+my_app      → my_app_web   🟢 Tests: 3 passed.
+my_app_web  → my_app       🏆 Commit. Push. Sleep.
+my_app      → my_app_web   🔥 git push log + commit hash
+my_app_web  → my_app       🍖 Bring axe. Save fat piece.
+my_app      → my_app_web   🪓 Tale of recursive stack overflow ate forest.
+```
+
+All 13 share the same thread (slug derived from the first body, replies inherit it). `log-my_app.jsonl` holds the 7 outbound from `my_app`; `log-my_app_web.jsonl` holds the 6 outbound from `my_app_web`. Bodies preserve newlines, code fences, and emojis verbatim. Content-addressed ids = no duplicates if logs sync to another machine.
+
 ## How it works
 
 Each writer owns one file: `$DIR/log-<alias>.jsonl`. One message per line:

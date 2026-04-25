@@ -10,8 +10,9 @@
 #   --dir <path>        Override message dir (default: $HOME/dev/.message)
 #   --commands <dir>    Override Claude commands dir (default: $HOME/.claude/commands)
 #   --shell <path>      Override shell helper install path (default: $HOME/.claude-message.sh)
+#   --bin <path>        Override wrapper install path (default: $HOME/.claude-message-cmd)
 #   --no-shell          Skip shell helper install
-#   --uninstall         Remove installed commands, shell helper, and message dir
+#   --uninstall         Remove installed commands, wrapper, shell helper, and message dir
 #   -h, --help          Show this help
 
 set -euo pipefail
@@ -21,10 +22,12 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DIR_DEFAULT="$HOME/dev/.message"
 COMMANDS_DEFAULT="$HOME/.claude/commands"
 SHELL_DEFAULT="$HOME/.claude-message.sh"
+BIN_DEFAULT="$HOME/.claude-message-cmd"
 
 MSG_DIR="$DIR_DEFAULT"
 COMMANDS_DIR="$COMMANDS_DEFAULT"
 SHELL_DST="$SHELL_DEFAULT"
+BIN_DST="$BIN_DEFAULT"
 INSTALL_SHELL=1
 UNINSTALL=0
 
@@ -36,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --commands=*) COMMANDS_DIR="${1#*=}";;
     --shell) shift; SHELL_DST="${1:?}";;
     --shell=*) SHELL_DST="${1#*=}";;
+    --bin) shift; BIN_DST="${1:?}";;
+    --bin=*) BIN_DST="${1#*=}";;
     --no-shell) INSTALL_SHELL=0;;
     --uninstall) UNINSTALL=1;;
     -h|--help)
@@ -53,6 +58,7 @@ fi
 
 CMDS=(message-send.md message-inbox.md message-reply.md)
 SHELL_SRC="$SCRIPT_DIR/shell/msg.sh"
+BIN_SRC="$SCRIPT_DIR/bin/claude-message-cmd"
 MARKER_BEGIN="# >>> claude-message >>>"
 MARKER_END="# <<< claude-message <<<"
 
@@ -95,6 +101,7 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     find "$MSG_DIR" -maxdepth 1 -type f \( -name "log-*.jsonl" -o -name ".seen-*" -o -name ".mtime-*" \) -delete 2>/dev/null || true
     rmdir "$MSG_DIR" 2>/dev/null || true
   fi
+  rm -f "$BIN_DST"
   rm -f "$SHELL_DST"
   for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
     strip_rc_block "$rc"
@@ -102,6 +109,7 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   echo "claude-message uninstalled."
   echo "  removed: ${CMDS[*]/#/$COMMANDS_DIR/}"
   echo "  removed: $MSG_DIR/{log-*.jsonl,.seen-*,.mtime-*} (dir removed if empty)"
+  echo "  removed: $BIN_DST"
   echo "  removed: $SHELL_DST (and rc source blocks)"
   exit 0
 fi
@@ -118,6 +126,14 @@ for f in "${CMDS[@]}"; do
   fi
   cp "$src" "$COMMANDS_DIR/$f"
 done
+
+if [[ ! -f "$BIN_SRC" ]]; then
+  echo "missing wrapper: $BIN_SRC" >&2
+  exit 1
+fi
+mkdir -p "$(dirname "$BIN_DST")"
+cp "$BIN_SRC" "$BIN_DST"
+chmod 0755 "$BIN_DST"
 
 SHELL_NOTE=""
 if [[ "$INSTALL_SHELL" -eq 1 ]]; then
@@ -140,6 +156,7 @@ cat <<EOF
 claude-message installed.
 
   commands: $COMMANDS_DIR/{message-send,message-inbox,message-reply}.md
+  wrapper:  $BIN_DST
   dir:      $MSG_DIR  (per-agent logs: log-<alias>.jsonl)$SHELL_NOTE
 
 Use from any Claude Code session in a repo under ~/dev/:
@@ -157,6 +174,13 @@ From a terminal (0 Claude tokens):
 
 Sender alias defaults to \$(basename "\$PWD"). Override per-repo by putting the
 alias on the first line of a \`.claude-message\` file at the repo root.
+
+Permission tip: to skip Claude Code's per-call approval prompt without granting
+blanket python3 access, add to ~/.claude/settings.json:
+
+  { "permissions": { "allow": ["Bash($BIN_DST:*)"] } }
+
+This allows ONLY the wrapper, nothing else.
 
 Uninstall: $SCRIPT_DIR/install.sh --uninstall
 EOF
