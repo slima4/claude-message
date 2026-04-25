@@ -195,7 +195,7 @@ Removes the three slash commands, the wrapper at `~/.agent-message-cmd`, the she
 
 ## Docs
 
-Deeper docs in [`docs/`](docs/) — install, use, design, [SAMP spec](SPEC.md), limits. Build locally with `pip install -r requirements-docs.txt && mkdocs serve`.
+Live: <https://slima4.github.io/agent-message/>. Sources in [`docs/`](docs/) — install, use, design, [SAMP spec](SPEC.md), limits. Build locally with `pip install -r requirements-docs.txt && mkdocs serve`.
 
 ## License
 
